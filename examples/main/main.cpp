@@ -578,7 +578,11 @@ int main(int argc, char ** argv) {
                     input_size = embd.size();
                 }
 
+
                 for (int i = 0; i < input_size; i += params.n_batch) {
+
+                    LOG("eval1: %s %d %d %d\n", LOG_TOKENS_TOSTR_PRETTY(ctx, embd), i, input_size, params.n_batch);
+
                     int n_eval = std::min(input_size - i, params.n_batch);
                     if (llama_eval(ctx_guidance, input_buf + i, n_eval, n_past_guidance, params.n_threads)) {
                         LOG_TEE("%s : failed to eval\n", __func__);
@@ -595,7 +599,7 @@ int main(int argc, char ** argv) {
                     n_eval = params.n_batch;
                 }
 
-                LOG("eval: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx, embd));
+                LOG("eval2: %s %d\n", LOG_TOKENS_TOSTR_PRETTY(ctx, embd), i);
 
                 if (llama_eval(ctx, &embd[i], n_eval, n_past, params.n_threads)) {
                     LOG_TEE("%s : failed to eval\n", __func__);
@@ -604,7 +608,7 @@ int main(int argc, char ** argv) {
 
                 n_past += n_eval;
 
-                LOG("n_past = %d\n", n_past);
+                // LOG("n_past = %d\n", n_past);
             }
 
             if (!embd.empty() && !path_session.empty()) {
@@ -626,6 +630,10 @@ int main(int argc, char ** argv) {
             }
 
             const llama_token id = llama_sample_token(ctx, ctx_guidance, grammar, params, last_tokens, candidates);
+
+            // VIS
+            // return 1;
+
 
             last_tokens.erase(last_tokens.begin());
             last_tokens.push_back(id);

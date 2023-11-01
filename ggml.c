@@ -26,6 +26,16 @@
 #include <stdarg.h>
 #include <signal.h>
 
+// #include <cv.h>
+#include <opencv2/core/types_c.h>
+#include <opencv2/core/core_c.h>
+CvMat *vis_img = NULL;
+int img_num = 0;
+int att_x_size = 12;
+int vis_rows;
+int vis_cols;
+// extern void apply_colormap(uint8_t *src_img, uint8_t *dst_img, int rows, int cols);
+
 #ifdef GGML_USE_METAL
 #include <unistd.h>
 #endif
@@ -15705,6 +15715,7 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
     GGML_ASSERT(tensor->src[1] == NULL || tensor->src[1]->backend == GGML_BACKEND_CPU);
 #endif // GGML_USE_CUBLAS
 
+
     switch (tensor->op) {
         case GGML_OP_DUP:
             {
@@ -16009,6 +16020,96 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
                 GGML_ASSERT(false);
             } break;
     }
+
+
+    // VIS
+
+    int x_scale = 4;
+    int v_scale = 1;
+    int tensor_i = -1;
+    if (strcmp(tensor->name, "rms_norm_0") == 0) {
+        tensor_i = 0;
+        v_scale = 32;
+    } else if (strcmp(tensor->name, "silu") == 0) {
+        tensor_i = 1;
+        x_scale = 11;
+        v_scale = 96;
+    } else if (strcmp(tensor->name, "KQ_soft_max") == 0) {
+        tensor_i = 2;
+        v_scale = 255;
+    } else if (strcmp(tensor->name, "rms_norm_2") == 0) {
+        tensor_i = 0;
+        v_scale = 32;
+    } else if (strcmp(tensor->name, "result_norm") == 0) {
+        tensor_i = 1;
+        v_scale = 32;
+    } else if (strcmp(tensor->name, "result_output") == 0) {
+        tensor_i = 2;
+        x_scale = 32;
+        v_scale = 16;
+    }
+
+    if (tensor_i >= 0 && params->type == GGML_TASK_COMPUTE) {
+
+        printf("LN %d %s T %d ND %d - %d %d %d\n", tensor->layer_num, tensor->name, tensor->type, tensor->n_dims, 
+                tensor->ne[0], tensor->ne[1], tensor->ne[2]);
+
+        if (tensor->n_dims == 2) {
+
+            const int nx = tensor->ne[0];
+            const int ny = tensor->ne[1];
+            struct ggml_tensor *t = tensor;
+
+            for (int y = 0; y < ny; y++) {
+                for (int x = 0; x < nx; x++) {
+                    float v = *(float *) ((char *) t->data + y*t->nb[1] + x*t->nb[0]);
+                    if (tensor_i == 2 && v < 0) v = 0;
+                    int iy = y + tensor->layer_num * 20 + tensor_i * 10;
+                    int ix = 32*att_x_size + x/x_scale;
+
+                    if (ix < vis_img->cols && iy < vis_img->rows) {
+                        int v1 = fabs(v) * v_scale;
+
+                        if (v1 > CV_MAT_ELEM(*vis_img, uchar, iy, ix))
+                            CV_MAT_ELEM(*vis_img, uchar, iy, ix) = v1;                            
+                    }
+
+                }
+            }
+
+
+        } else if (tensor->n_dims == 3) {
+
+            // img = cvCreateMat(tensor->ne[1], tensor->ne[0]*tensor->ne[2], CV_8UC3);
+
+            const int nx = tensor->ne[0];
+            const int ny = tensor->ne[1];
+            const int nz = tensor->ne[2];
+
+            struct ggml_tensor *t = tensor;
+
+            for (int z = 0; z < nz; z++) {
+                for (int y = 0; y < ny; y++) {
+                    for (int x = 0; x < nx; x++) {
+                        float v = *(float *) ((char *) t->data + z*t->nb[2] + y*t->nb[1] + x*t->nb[0]);
+                        
+                        int iy = y + tensor->layer_num * 20;
+                        int ix = x + nx*z;
+
+                        if (ix < vis_img->cols && iy < vis_img->rows) {
+                            CV_MAT_ELEM(*vis_img, uchar, iy, ix) = v*255;
+                        }
+                    }
+                }
+            }
+
+        } else {
+            printf("tensor->n_dims %d\n", tensor->n_dims);
+        }
+
+    }
+
+
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -17222,6 +17323,14 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
 
     set_numa_thread_affinity(state->ith, n_threads);
 
+    // VIS
+    if (vis_img) cvReleaseMat(&vis_img);
+    vis_rows = 34 * 20;
+    vis_cols = 4096 / 4 + 32 * att_x_size;
+    vis_img = cvCreateMat(vis_rows, vis_cols, CV_8UC1);
+    cvSetZero(vis_img);
+    img_num++;
+
     int node_n = -1;
 
     while (true) {
@@ -17327,6 +17436,19 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
             ggml_compute_forward(&params, node);
         }
     }
+
+
+    // VIS
+    char fname[128];
+    sprintf(fname, "/home/ubuntu/tmp/llama_vis_%d.png", img_num);
+
+    CvMat *map_img = cvCreateMat(vis_rows, vis_cols, CV_8UC3);
+    apply_colormap(fname, vis_img->data, map_img->data, vis_rows, vis_cols);
+
+    printf("\nimg %d %d %s\n", map_img->cols, map_img->rows, fname);
+    // cvSaveImage(fname, map_img);
+
+
 
     return GGML_EXIT_SUCCESS;
 }

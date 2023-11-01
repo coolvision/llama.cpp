@@ -479,7 +479,7 @@ $(info )
 #
 
 ggml.o: ggml.c ggml.h ggml-cuda.h
-	$(CC)  $(CFLAGS)   -c $< -o $@
+	$(CC)  $(CFLAGS) -c $< -o $@
 
 ggml-alloc.o: ggml-alloc.c ggml.h ggml-alloc.h
 	$(CC)  $(CFLAGS)   -c $< -o $@
@@ -508,8 +508,11 @@ clean:
 # Examples
 #
 
-main: examples/main/main.cpp                                  build-info.h ggml.o llama.o common.o console.o grammar-parser.o $(OBJS)
-	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
+ggml_opencv.o: ggml_opencv.cpp
+	$(CXX) -I/usr/include/opencv4/ -c $(filter-out %.h,$^) -o $@
+
+main: examples/main/main.cpp                                  ggml_opencv.o build-info.h ggml.o llama.o common.o console.o grammar-parser.o $(OBJS)
+	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS) -L/usr/lib/x86_64-linux-gnu  -lopencv_imgproc -lopencv_core -lopencv_highgui -lopencv_imgcodecs
 	@echo
 	@echo '====  Run ./main -h for help.  ===='
 	@echo

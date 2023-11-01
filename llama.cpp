@@ -2547,6 +2547,7 @@ static struct ggml_cgraph * llm_build_llama(
             cur = ggml_rms_norm(ctx0, inpL, norm_rms_eps);
             offload_func(cur);
             ggml_set_name(cur, "rms_norm_0");
+            cur->layer_num = il; // VIS
 
             // cur = cur*attn_norm(broadcasted)
             cur = ggml_mul(ctx0, cur, model.layers[il].attn_norm);
@@ -2634,6 +2635,9 @@ static struct ggml_cgraph * llm_build_llama(
             offload_func_v(KQ_soft_max);
             ggml_set_name(KQ_soft_max, "KQ_soft_max");
 
+            KQ_soft_max->layer_num = il; // VIS
+
+
             // split cached V into n_head heads
             struct ggml_tensor * V =
                 ggml_view_3d(ctx0, kv_self.v,
@@ -2687,6 +2691,7 @@ static struct ggml_cgraph * llm_build_llama(
                 cur = ggml_rms_norm(ctx0, inpFF, norm_rms_eps);
                 offload_func(cur);
                 ggml_set_name(cur, "rms_norm_1");
+                cur->layer_num = il; // VIS
 
                 // cur = cur*ffn_norm(broadcasted)
                 cur = ggml_mul(ctx0, cur, model.layers[il].ffn_norm);
@@ -2710,6 +2715,7 @@ static struct ggml_cgraph * llm_build_llama(
             cur = ggml_silu(ctx0, cur);
             offload_func(cur);
             ggml_set_name(cur, "silu");
+            cur->layer_num = il; // VIS
 
             cur = ggml_mul(ctx0, cur, tmp);
             offload_func(cur);
@@ -2720,6 +2726,7 @@ static struct ggml_cgraph * llm_build_llama(
                     cur);
             offload_func(cur);
             ggml_set_name(cur, "result_w2");
+            cur->layer_num = il; // VIS
         }
 
         cur = ggml_add(ctx0, cur, inpFF);
@@ -2737,16 +2744,19 @@ static struct ggml_cgraph * llm_build_llama(
         cur = ggml_rms_norm(ctx0, cur, norm_rms_eps);
         offload_func_nr(cur);
         ggml_set_name(cur, "rms_norm_2");
+        cur->layer_num = 32; // VIS
 
         // cur = cur*norm(broadcasted)
         cur = ggml_mul(ctx0, cur, model.output_norm);
         // offload_func_nr(cur); // TODO CPU + GPU mirrored backend
         ggml_set_name(cur, "result_norm");
+        cur->layer_num = 32; // VIS
     }
 
     // lm_head
     cur = ggml_mul_mat(ctx0, model.output, cur);
     ggml_set_name(cur, "result_output");
+    cur->layer_num = 32; // VIS
 
     ggml_build_forward_expand(gf, cur);
 
@@ -3806,6 +3816,7 @@ static bool llama_eval_internal(
     if (cgraph_fname) {
         ggml_graph_export(gf, cgraph_fname);
     }
+    // ggml_graph_export(gf, "llama.graph");
 
 #ifdef GGML_PERF
     // print timing information per ggml operation (for debugging purposes)

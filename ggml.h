@@ -496,6 +496,8 @@ extern "C" {
 
         void * extra; // extra things e.g. for ggml-cuda.cu
 
+        int layer_num;
+
         char padding[4];
     };
 
