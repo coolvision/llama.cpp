@@ -557,7 +557,9 @@ libllama.so: llama.o ggml.o $(OBJS)
 clean:
 	rm -vrf *.o tests/*.o *.so *.dll benchmark-matmult common/build-info.cpp *.dot $(COV_TARGETS) $(BUILD_TARGETS) $(TEST_TARGETS)
 
-#
+mia: mia.cpp                      				              ggml.o llama.o $(COMMON_DEPS) console.o grammar-parser.o $(OBJS)
+	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
+
 # Examples
 #
 
