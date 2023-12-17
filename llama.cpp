@@ -1519,6 +1519,9 @@ struct llama_context {
     llama_buffer buf_alloc;
     ggml_allocr * alloc = NULL;
 
+    // MIA_DEV
+    ggml_compute_callback ggml_cb = NULL;
+
 #ifdef GGML_USE_METAL
     ggml_metal_context * ctx_metal = NULL;
 #endif
@@ -1527,6 +1530,11 @@ struct llama_context {
     ggml_mpi_context * ctx_mpi = NULL;
 #endif
 };
+
+// MIA_DEV
+void add_ggml_callback(struct llama_context *ctx, ggml_compute_callback cb) {
+    ctx->ggml_cb = cb;
+}
 
 //
 // kv cache helpers
@@ -5922,6 +5930,9 @@ static struct ggml_cgraph * llama_build_graph(
     }
 
     llm.free();
+
+    // MIA_DEV
+    result->cb = lctx.ggml_cb;
 
     if (worst_case) {
         int n_non_view_total = 0;

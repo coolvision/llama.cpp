@@ -21,6 +21,18 @@ static void llama_null_log_callback(enum ggml_log_level level, const char * text
     (void) user_data;
 }
 
+extern "C" void tensor_process(char *name, int layer_num) {
+
+
+    printf("process %s %d\n", name, layer_num);
+
+
+
+};
+
+typedef void (*ggml_compute_callback)(char *name, int layer_num);
+
+
 int main(int argc, char ** argv) {
     gpt_params params;
 
@@ -39,7 +51,7 @@ int main(int argc, char ** argv) {
     }
 
     // if (!params.verbose) {
-        llama_log_set(llama_null_log_callback, NULL);
+    llama_log_set(llama_null_log_callback, NULL);
     // }
 
     LOG("%s: llama backend init\n", __func__);
@@ -53,12 +65,12 @@ int main(int argc, char ** argv) {
     LOG("%s: load the model\n", __func__);
     std::tie(model, ctx) = llama_init_from_gpt_params(params);
 
-
-
     if (model == NULL) {
         LOG_TEE("%s: error: unable to load model\n", __func__);
         return 1;
     }
+
+    add_ggml_callback(ctx, tensor_process);
 
     const int n_ctx = llama_n_ctx(ctx);
     LOG("n_ctx: %d\n", n_ctx);

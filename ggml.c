@@ -14578,6 +14578,11 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
                 GGML_ASSERT(false);
             } break;
     }
+
+    // MIA_DEV
+    if (params->cb) {
+        params->cb(tensor->name, 0);
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -16327,6 +16332,7 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
                 /*.nth   =*/ 0,
                 /*.wsize =*/ cplan->work_size,
                 /*.wdata =*/ cplan->work_data,
+                /*.cb    =*/ cgraph->cb, // MIA_DEV
             };
 
             if (node_n != -1) {
@@ -16410,6 +16416,7 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
             /*.nth   =*/ n_tasks,
             /*.wsize =*/ cplan->work_size,
             /*.wdata =*/ cplan->work_data,
+            /*.cb    =*/ cgraph->cb, // MIA_DEV
         };
 
         if (state->ith < n_tasks) {

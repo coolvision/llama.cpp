@@ -562,6 +562,8 @@ extern "C" {
         struct ggml_tensor ** keys;
     };
 
+    typedef void (*ggml_compute_callback)(char *name, int layer_num);
+
     // computation graph
     struct ggml_cgraph {
         int size;
@@ -580,6 +582,9 @@ extern "C" {
         int     perf_runs;
         int64_t perf_cycles;
         int64_t perf_time_us;
+
+        // hooks MIA_DEV
+        ggml_compute_callback cb;
     };
 
     // scratch buffer
@@ -616,6 +621,9 @@ extern "C" {
         // work buffer for all threads
         size_t wsize;
         void * wdata;
+
+        // hook MIA_DEV
+        ggml_compute_callback cb;
     };
 
     // misc

@@ -849,6 +849,9 @@ extern "C" {
 
     LLAMA_API void llama_dump_timing_info_yaml(FILE * stream, const struct llama_context * ctx);
 
+    // MIA_DEV
+    void add_ggml_callback(struct llama_context *ctx, ggml_compute_callback cb);
+
 #ifdef __cplusplus
 }
 #endif
