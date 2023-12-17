@@ -562,7 +562,8 @@ extern "C" {
         struct ggml_tensor ** keys;
     };
 
-    typedef void (*ggml_compute_callback)(char *name, int layer_num);
+    // MIA_DEV
+    typedef void (*ggml_compute_callback)(struct ggml_tensor * tensor);
 
     // computation graph
     struct ggml_cgraph {

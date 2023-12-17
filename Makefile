@@ -558,7 +558,7 @@ clean:
 	rm -vrf *.o tests/*.o *.so *.dll benchmark-matmult common/build-info.cpp *.dot $(COV_TARGETS) $(BUILD_TARGETS) $(TEST_TARGETS)
 
 mia: mia.cpp                      				              ggml.o llama.o $(COMMON_DEPS) console.o grammar-parser.o $(OBJS)
-	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -I/usr/include/opencv4/ $(filter-out %.h,$^) -o $@ $(LDFLAGS) -L/usr/lib/x86_64-linux-gnu  -lopencv_imgproc -lopencv_core -lopencv_highgui -lopencv_imgcodecs
 
 # Examples
 #

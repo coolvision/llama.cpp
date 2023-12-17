@@ -15,23 +15,108 @@
 #include <string>
 #include <vector>
 
-static void llama_null_log_callback(enum ggml_log_level level, const char * text, void * user_data) {
-    (void) level;
-    (void) text;
-    (void) user_data;
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/highgui.hpp>
+
+#include <opencv2/core/types_c.h>
+#include <opencv2/core/core_c.h>
+#include <opencv2/imgproc/imgproc_c.h>
+
+using namespace cv;
+
+CvMat *vis_img = NULL;
+int att_size = -1;
+int y_pad = 1;
+int n_act_maps = 1;
+int vis_rows = -1;
+int vis_cols = -1;
+bool draw = true;
+
+void draw_px(int ix, int iy, float v, float v_scale, CvMat *vis_img);
+void draw_px2(int ix, int iy, float v, float v_scale, CvMat *vis_img);
+void apply_colormap(char *name, uint8_t *src_img, uint8_t *dst_img, int rows, int cols);
+static void llama_null_log_callback(enum ggml_log_level level, const char * text, void * user_data);
+
+extern "C" void tensor_process_callback(struct ggml_tensor * tensor) {
+
+    static int select_layer = -1;
+    static int select_index = -1;
+
+    struct ggml_tensor *t = tensor;
+    struct ggml_tensor * src0 = t->src[0];
+    struct ggml_tensor * src1 = t->src[1];
+
+    int nx = t->ne[0];
+    int ny = t->ne[1];
+    int nz = t->ne[2];
+
+    std::stringstream st(t->name);
+    std::string name(t->name);
+    int layer_num = 0;
+    auto n = std::count(name.begin(), name.end(), '-');
+    if (n == 1) {
+        std::string ln;
+        getline(st, ln, '-');
+        getline(st, ln, '-');
+        layer_num = std::stoi(ln);
+    }
+
+    // if (strncmp(t->name, "kq_soft_max", 11) == 0) {
+    //     std::cout << "tensor_process: " << name << ", " << layer_num << " att_size " << att_size << " n " << nx << " " << ny << " " << nz << std::endl;
+    // }
+
+    if (ggml_n_dims(t) == 3) {
+        for (int z = 0; z < nz; z++) {
+
+            if (strncmp(t->name, "kq_soft_max", 11) == 0) {
+
+                // std::cout << "kq_soft_max: " << z << std::endl;
+
+                if (draw) {
+                    char buffer[25];
+                    sprintf(buffer, "%d", layer_num);
+                    CvFont font;
+                    cvInitFont(&font, CV_FONT_HERSHEY_SIMPLEX, 0.5, 0.5, 0, 1, 8);
+                    cvPutText(vis_img, buffer, cvPoint(
+                            t->ne[0] * 32 + 20,
+                            layer_num * (att_size * 1 + y_pad) + 10),
+                            &font, cvScalarAll(128));
+                }
+
+                int head_i = (layer_num * 32 + z);
+                bool do_ablate = false;
+
+                // if (select_layer >= 0 && select_index >= 0) {
+                //     if (z != select_index && layer_num == select_layer) {
+                //         do_ablate = true;
+                //     }
+                // }
+
+                // for (int i = 0; i < 1024; i++) {
+                //     if (ablate_a[i] == head_i) {
+                //         do_ablate = true;
+                //     }
+                // }
+
+                for (int y = 0; y < ny; y++) {
+                    for (int x = 0; x < nx; x++) {
+                        float *vp = (float *) ((char *) t->data + z*t->nb[2] + y*t->nb[1] + x*t->nb[0]);
+                        float v = *vp;
+                        if (do_ablate) {
+                            *vp = 0.0f;
+                            v = 0;
+                        }
+                        int iy = y + layer_num * (att_size * 1 + y_pad);
+                        int ix = x + nx*z;
+                        draw_px2(ix, iy, v, 255.0f, vis_img);
+                    }
+                }
+            }
+        }
+    }
 }
-
-extern "C" void tensor_process(char *name, int layer_num) {
-
-
-    printf("process %s %d\n", name, layer_num);
-
-
-
-};
-
-typedef void (*ggml_compute_callback)(char *name, int layer_num);
-
 
 int main(int argc, char ** argv) {
     gpt_params params;
@@ -70,7 +155,12 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    add_ggml_callback(ctx, tensor_process);
+//=============================================================================
+// hook into computation graph
+
+    add_ggml_callback(ctx, tensor_process_callback);
+
+//=============================================================================
 
     const int n_ctx = llama_n_ctx(ctx);
     LOG("n_ctx: %d\n", n_ctx);
@@ -100,6 +190,18 @@ int main(int argc, char ** argv) {
     for (int i = 0; i < (int) embd_inp.size(); i++) {
         LOG_TEE("%6d -> '%s'\n", embd_inp[i], llama_token_to_piece(ctx, embd_inp[i]).c_str());
     }
+
+//=============================================================================
+// optional visualization
+    bool draw = true;
+    if (draw) {
+        att_size = embd_inp.size();
+        vis_rows = 33 * (att_size * n_act_maps + y_pad);
+        vis_cols = 32 * 32 + 200;
+        vis_img = cvCreateMat(vis_rows, vis_cols, CV_8UC1);
+        cvSetZero(vis_img);
+    }
+//=============================================================================
 
     LOG_TEE("sampling: \n%s\n", llama_sampling_print(sparams).c_str());
     LOG_TEE("sampling order: \n%s\n", llama_sampling_order_print(sparams).c_str());
@@ -142,6 +244,13 @@ int main(int argc, char ** argv) {
                 if (llama_decode(ctx, llama_batch_get_one(&embd[i], n_eval, n_past, 0))) {
                     LOG_TEE("%s : failed to eval\n", __func__);
                     return 1;
+                }
+
+                if (draw && n_past == 0) {
+                    char fname[128];
+                    sprintf(fname, "/home/ubuntu/tmp/llama_vis.png");
+                    CvMat *map_img = cvCreateMat(vis_rows, vis_cols, CV_8UC3);
+                    apply_colormap(fname, vis_img->data.ptr, map_img->data.ptr, vis_rows, vis_cols);
                 }
 
                 n_past += n_eval;
@@ -218,4 +327,40 @@ int main(int argc, char ** argv) {
     llama_backend_free();
 
     return 0;
+}
+
+void draw_px(int ix, int iy, float v, float v_scale, CvMat *vis_img) {
+    if (ix < vis_img->cols && iy < vis_img->rows) {
+        int v1 = 128 + v * v_scale;
+        if (v1 > 255) v1 = 255;
+        if (v1 < 0) v1 = 0;
+        if (v1 > CV_MAT_ELEM(*vis_img, uchar, iy, ix)) {
+            CV_MAT_ELEM(*vis_img, uchar, iy, ix) = v1;                         
+        }
+    } 
+}
+
+void draw_px2(int ix, int iy, float v, float v_scale, CvMat *vis_img) {
+    if (ix < vis_img->cols && iy < vis_img->rows) {
+        int v1 = abs(v * v_scale);
+        if (v1 > 255) v1 = 255;
+        if (v1 < 0) v1 = 0;
+        if (v1 > CV_MAT_ELEM(*vis_img, uchar, iy, ix)) {
+            CV_MAT_ELEM(*vis_img, uchar, iy, ix) = v1;                         
+        }
+    } 
+}
+
+void apply_colormap(char *name, uint8_t *src_img, uint8_t *dst_img, int rows, int cols) {
+    cv::Mat in(rows, cols, CV_8UC1, src_img);
+    cv::Mat out(rows, cols, CV_8UC3, dst_img);
+    applyColorMap(in, out, cv::COLORMAP_INFERNO);
+    std::string s(name);
+    imwrite(s, out);
+}
+
+static void llama_null_log_callback(enum ggml_log_level level, const char * text, void * user_data) {
+    (void) level;
+    (void) text;
+    (void) user_data;
 }

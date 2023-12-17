@@ -14580,8 +14580,8 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
     }
 
     // MIA_DEV
-    if (params->cb) {
-        params->cb(tensor->name, 0);
+    if (params->cb && params->type == GGML_TASK_COMPUTE) {
+        params->cb(tensor);
     }
 }
 
