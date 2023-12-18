@@ -79,7 +79,7 @@
 
 // MIA_DEV
 char *vocab_ext;
-int vocab_ext_token_size = 16;
+int vocab_ext_token_size = 32;
 
 #if defined(_MSC_VER)
 #pragma warning(disable: 4244 4267) // possible loss of data
@@ -2779,6 +2779,8 @@ static void llm_load_vocab(
         }
         char *p = &vocab_ext[i*vocab_ext_token_size];
         strncat(p, s.c_str(), vocab_ext_token_size);
+
+        // printf("vocab %d s %s p %s", i, s.c_str(), p);
     }
 
     GGML_ASSERT(vocab.id_to_token.size() == vocab.token_to_id.size());

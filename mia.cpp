@@ -88,11 +88,12 @@ extern "C" void tensor_process_callback(struct ggml_tensor * tensor) {
     //     std::cout << "tensor_process: " << name << ", " << layer_num << " att_size " << att_size << " n " << nx << " " << ny << " " << nz << std::endl;
     // }
 
-    std::cout << "tensor_process: " << name << ", " << layer_num << " att_size " << att_size << " n " << nx << " " << ny << " " << nz << std::endl;
+    // std::cout << "tensor_process: " << name << ", " << layer_num << " att_size " << att_size << " n " << nx << " " << ny << " " << nz << std::endl;
 
-    if (strncmp(t->name, "result_wo", 9) == 0 && layer_num == 16) {
+    if (strstr(t->name, "kqv_out")
+        && layer_num == 16) {
         printf("\nunembed LN %d %s:\n", layer_num, t->name);
-        for (int y = ny-1; y < ny; y++) {
+        for (int y = 0; y < ny; y++) {
             unembed(t, y);
         }
     }
@@ -100,7 +101,7 @@ extern "C" void tensor_process_callback(struct ggml_tensor * tensor) {
     if (ggml_n_dims(t) == 3) {
         for (int z = 0; z < nz; z++) {
 
-            if (strncmp(t->name, "kq_soft_max", 11) == 0) {
+            if (strstr(t->name, "kq_soft_max")) {
 
                 // std::cout << "kq_soft_max: " << z << std::endl;
 
@@ -460,6 +461,7 @@ void unembed(struct ggml_tensor *t, int set_y) {
     }
 
     // top-k
+    printf("%d: ", set_y);
     for (int j = 0; j < 5; j++) {
 
         float max = -FLT_MAX;
@@ -470,7 +472,7 @@ void unembed(struct ggml_tensor *t, int set_y) {
                 max_i = y;
             } 
         }
-        printf("%s %.2f – ", &vocab_ext[max_i*vocab_ext_token_size], max);
+        printf("%s %.2f |", &vocab_ext[max_i*vocab_ext_token_size], max);
 
         rf[max_i] = -FLT_MAX;
     }
