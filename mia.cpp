@@ -14,6 +14,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <iomanip>
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
@@ -33,27 +34,27 @@ int n_act_maps = 1;
 int vis_rows = -1;
 int vis_cols = -1;
 
-extern char *vocab_ext;
-extern int vocab_ext_token_size;
+llama_model * model;
+llama_context * ctx;
 
 struct ggml_tensor * output_norm = NULL;
 struct ggml_tensor * output = NULL;
 
 //=============================================================================
+struct mia_params {
+    bool draw = false;
+    std::string ll_layer;
+    std::string save_layer_name;
+    std::string save_layer_filename;    
+    std::string load_layer_name;
+    std::string load_layer_filename;    
+    int select_layer = -1;
+    int select_index = -1;
+};
 
-bool draw = true;
-
-std::string save_layer_name;
-std::string save_layer_filename;    
-int save_layer_i = -1;
-
-std::string load_layer_name;
-std::string load_layer_filename;    
-int load_layer_i = -1;
-
-int select_layer = -1;
-int select_index = -1;
-
+mia_params mia;
+gpt_params params;
+bool params_parse(int argc, char ** argv);
 //=============================================================================
 
 inline float v2(struct ggml_tensor *t, uint32_t y, uint32_t x) {
@@ -91,68 +92,52 @@ extern "C" void tensor_process_callback(struct ggml_tensor * tensor) {
         layer_num = std::stoi(ln);
     }
 
-    // if (strncmp(t->name, "kq_soft_max", 11) == 0) {
-    //     std::cout << "tensor_process: " << name << ", " << layer_num << " att_size " << att_size << " n " << nx << " " << ny << " " << nz << std::endl;
-    // }
-
-    // std::cout << "tensor_process: " << name << ", " << layer_num << " att_size " << att_size << " n " << nx << " " << ny << " " << nz << std::endl;
-
-    if (strstr(t->name, "kqv_out")
-        && layer_num == 16) {
+    if ((strstr(t->name, mia.ll_layer.c_str()) && !mia.ll_layer.empty()) || (mia.ll_layer == "all")) { 
         printf("\nunembed LN %d %s:\n", layer_num, t->name);
         for (int y = 0; y < ny; y++) {
             unembed(t, y);
         }
+        printf("\n");
     }
 
-    if (strstr(t->name, save_layer_name.c_str()) && layer_num == save_layer_i) {
-        FILE *fout = fopen(save_layer_filename.c_str(), "wb");
+    if (!mia.save_layer_name.empty() && strstr(t->name, mia.save_layer_name.c_str())) {
+        FILE *fout = fopen(mia.save_layer_filename.c_str(), "wb");
         const size_t size = ggml_nbytes(t);
         int r = fwrite(t->data, sizeof(char), size, fout);
-        printf("\nsave tensor %s to %s size %d\n", save_layer_name.c_str(), save_layer_filename.c_str(), size);
+        printf("\nsave tensor %s to %s size %d\n", mia.save_layer_name.c_str(), mia.save_layer_filename.c_str(), size);
         fclose(fout);
     }
 
-    if (strstr(t->name, load_layer_name.c_str()) && layer_num == load_layer_i) {
-        FILE *fin = fopen(load_layer_filename.c_str(), "rb");
+    if (!mia.load_layer_name.empty() && strstr(t->name, mia.load_layer_name.c_str())) {
+        FILE *fin = fopen(mia.load_layer_filename.c_str(), "rb");
         const size_t size = ggml_nbytes(t);
         const size_t r = fread((char *)t->data, sizeof(char), size, fin);
-        printf("\nload tensor %s from %s size %d\n", load_layer_name.c_str(), load_layer_filename.c_str(), size);
+        printf("\nload tensor %s from %s size %d\n", mia.load_layer_name.c_str(), mia.load_layer_filename.c_str(), size);
         fclose(fin);
     }
 
     if (ggml_n_dims(t) == 3) {
         for (int z = 0; z < nz; z++) {
 
-            if (strstr(t->name, "kq_soft_max")) {
+            if (mia.draw && strstr(t->name, "kq_soft_max")) {
 
-                // std::cout << "kq_soft_max: " << z << std::endl;
-
-                if (draw) {
-                    char buffer[25];
-                    sprintf(buffer, "%d", layer_num);
-                    CvFont font;
-                    cvInitFont(&font, CV_FONT_HERSHEY_SIMPLEX, 0.5, 0.5, 0, 1, 8);
-                    cvPutText(vis_img, buffer, cvPoint(
-                            t->ne[0] * 32 + 20,
-                            layer_num * (att_size * 1 + y_pad) + 10),
-                            &font, cvScalarAll(128));
-                }
+                char buffer[25];
+                sprintf(buffer, "%d", layer_num);
+                CvFont font;
+                cvInitFont(&font, CV_FONT_HERSHEY_SIMPLEX, 0.5, 0.5, 0, 1, 8);
+                cvPutText(vis_img, buffer, cvPoint(
+                        t->ne[0] * 32 + 20,
+                        layer_num * (att_size * 1 + y_pad) + 10),
+                        &font, cvScalarAll(128));
 
                 int head_i = (layer_num * 32 + z);
                 bool do_ablate = false;
 
-                // if (select_layer >= 0 && select_index >= 0) {
-                //     if (z != select_index && layer_num == select_layer) {
-                //         do_ablate = true;
-                //     }
-                // }
-
-                // for (int i = 0; i < 1024; i++) {
-                //     if (ablate_a[i] == head_i) {
-                //         do_ablate = true;
-                //     }
-                // }
+                if (mia.select_layer >= 0 && mia.select_index >= 0) {
+                    if (z != mia.select_index && layer_num == mia.select_layer) {
+                        do_ablate = true;
+                    }
+                }
 
                 for (int y = 0; y < ny; y++) {
                     for (int x = 0; x < nx; x++) {
@@ -175,11 +160,6 @@ extern "C" void tensor_process_callback(struct ggml_tensor * tensor) {
 extern "C" void init_callback(struct ggml_cgraph * cgraph) {
 
     uint32_t size = (
-        // 4096ull*4097ull + 
-        // 4096ull*4097ull +
-        // 4096ull*4097ull +
-        // 4096ull*4097ull +
-        // 32000ull * 4097ull + 4097ull +
         32000ull * 4097ull + 4097ull
         ) * sizeof(float);
     uint8_t *buf = (uint8_t *)malloc(size);
@@ -189,26 +169,20 @@ extern "C" void init_callback(struct ggml_cgraph * cgraph) {
     params.no_alloc   = false;
     struct ggml_context * ctx0 = ggml_init(params);
 
-    // wq = get_float_weights(ctx0, cgraph, "blk.16.attn_q.weight"); 
-    // wk = get_float_weights(ctx0, cgraph, "blk.16.attn_k.weight");
-    // wv = get_float_weights(ctx0, cgraph, "blk.16.attn_v.weight"); 
-
     output_norm = get_float_weights(ctx0, cgraph, "output_norm.weight"); 
     output = get_float_weights(ctx0, cgraph, "output.weight");
-    // token_embd = get_float_weights(ctx0, cgraph, "token_embd.weight");
-    // attn_output = get_float_weights(ctx0, cgraph, "blk.16.attn_output.weight"); 
 }
 
 int main(int argc, char ** argv) {
-    gpt_params params;
 
-    if (!gpt_params_parse(argc, argv, params)) {
+    if (!params_parse(argc, argv)) {
         return 1;
     }
+
+    params.sparams.temp = -1.0;
     llama_sampling_params & sparams = params.sparams;
 
     log_set_target(stdout);
-
     console::init(params.simple_io, params.use_color);
     atexit([]() { console::cleanup(); });
 
@@ -216,19 +190,10 @@ int main(int argc, char ** argv) {
         params.seed = time(NULL);
     }
 
-    // if (!params.verbose) {
     llama_log_set(llama_null_log_callback, NULL);
-    // }
 
-    LOG("%s: llama backend init\n", __func__);
     llama_backend_init(params.numa);
-
-    llama_model * model;
-    llama_context * ctx;
     llama_context * ctx_guidance = NULL;    
-
-    // load the model
-    LOG("%s: load the model\n", __func__);
     std::tie(model, ctx) = llama_init_from_gpt_params(params);
 
     if (model == NULL) {
@@ -245,21 +210,12 @@ int main(int argc, char ** argv) {
 //=============================================================================
 
     const int n_ctx = llama_n_ctx(ctx);
-    LOG("n_ctx: %d\n", n_ctx);
-
     const bool add_bos = llama_should_add_bos_token(model);
-    LOG("add_bos: %d\n", add_bos);
-
     std::vector<llama_token> embd_inp;
-
-    LOG("tokenize the prompt\n");
     if (params.chatml) {
         params.prompt = "<|im_start|>system\n" + params.prompt + "<|im_end|>";
     }
     embd_inp = ::llama_tokenize(ctx, params.prompt, add_bos, true);
-
-    LOG("prompt: \"%s\"\n", log_tostr(params.prompt));
-    LOG("tokens: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx, embd_inp).c_str());
 
     // Should not run without any tokens
     if (embd_inp.empty()) {
@@ -267,15 +223,11 @@ int main(int argc, char ** argv) {
         LOG("embd_inp was considered empty and bos was added: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx, embd_inp).c_str());
     }
 
-    LOG_TEE("%s: prompt: '%s'\n", __func__, params.prompt.c_str());
-    LOG_TEE("%s: number of tokens in prompt = %zu\n", __func__, embd_inp.size());
-    for (int i = 0; i < (int) embd_inp.size(); i++) {
-        LOG_TEE("%6d -> '%s'\n", embd_inp[i], llama_token_to_piece(ctx, embd_inp[i]).c_str());
-    }
+    LOG_TEE("prompt (%d): '%s'\n", embd_inp.size(), params.prompt.c_str());
 
 //=============================================================================
 // optional visualization
-    if (draw) {
+    if (mia.draw) {
         att_size = embd_inp.size();
         vis_rows = 33 * (att_size * n_act_maps + y_pad);
         vis_cols = 32 * 32 + 200;
@@ -283,20 +235,10 @@ int main(int argc, char ** argv) {
         cvSetZero(vis_img);
     }
 //=============================================================================
-
-    LOG_TEE("sampling: \n%s\n", llama_sampling_print(sparams).c_str());
-    LOG_TEE("sampling order: \n%s\n", llama_sampling_order_print(sparams).c_str());
-    LOG_TEE("generate: n_ctx = %d, n_batch = %d, n_predict = %d, n_keep = %d\n", n_ctx, params.n_batch, params.n_predict, params.n_keep);
-    LOG_TEE("\n\n");
-
-    bool is_antiprompt        = false;
-    bool input_echo           = true;
-
+   
     int n_past             = 0;
     int n_remain           = params.n_predict;
     int n_consumed         = 0;
-    int n_session_consumed = 0;
-    int n_past_guidance    = 0;
 
     std::vector<int>   input_tokens;
     std::vector<int>   output_tokens;
@@ -306,7 +248,7 @@ int main(int argc, char ** argv) {
 
     struct llama_sampling_context * ctx_sampling = llama_sampling_init(sparams);
 
-    while ((n_remain != 0 && !is_antiprompt) || params.interactive) {
+    while (n_remain != 0) {
 
         // predict
         if (!embd.empty()) {
@@ -327,7 +269,7 @@ int main(int argc, char ** argv) {
                     return 1;
                 }
 
-                if (draw && n_past == 0) {
+                if (mia.draw && n_past == 0) {
                     char fname[128];
                     sprintf(fname, "/home/ubuntu/tmp/llama_vis.png");
                     CvMat *map_img = cvCreateMat(vis_rows, vis_cols, CV_8UC3);
@@ -352,14 +294,10 @@ int main(int argc, char ** argv) {
 
             embd.push_back(id);
 
-            // echo this to console
-            input_echo = true;
-
             // decrement remaining sampling budget
             --n_remain;
 
             // LOG("n_remain: %d\n", n_remain);
-
         } else {
             // some user input remains from prompt or interaction, forward it to processing
             // LOG("embd_inp.size(): %d, n_consumed: %d\n", (int) embd_inp.size(), n_consumed);
@@ -378,27 +316,28 @@ int main(int argc, char ** argv) {
         }
 
         // display text
-        if (input_echo) {
-            for (auto id : embd) {
-                const std::string token_str = llama_token_to_piece(ctx, id);
-                printf("%s", token_str.c_str());
+        for (auto id : embd) {
+            const std::string token_str = llama_token_to_piece(ctx, id);
+            // printf("%s", token_str.c_str());
 
-                if (embd.size() > 1) {
-                    input_tokens.push_back(id);
-                } else {
-                    output_tokens.push_back(id);
-                    output_ss << token_str;
-                }
+            if (embd.size() > 1) {
+                input_tokens.push_back(id);
+            } else {
+                output_tokens.push_back(id);
+                output_ss << token_str;
             }
-            fflush(stdout);
         }
 
+
         // end of text token
-        if (!embd.empty() && embd.back() == llama_token_eos(model) && !(params.instruct || params.interactive || params.chatml)) {
+        if (!embd.empty() && embd.back() == llama_token_eos(model)) {
             LOG_TEE(" [end of text]\n");
             break;
         }
     }
+
+    std::cout << "output: \"" << output_ss.str() << "\"" << std::endl;
+
 
     if (ctx_guidance) { llama_free(ctx_guidance); }
     llama_free(ctx);
@@ -485,7 +424,7 @@ void unembed(struct ggml_tensor *t, int set_y) {
 
     // top-k
     printf("%d: ", set_y);
-    for (int j = 0; j < 5; j++) {
+    for (int j = 0; j < 10; j++) {
 
         float max = -FLT_MAX;
         int max_i = -1;
@@ -495,9 +434,87 @@ void unembed(struct ggml_tensor *t, int set_y) {
                 max_i = y;
             } 
         }
-        printf("%s %.2f |", &vocab_ext[max_i*vocab_ext_token_size], max);
-
+        std::string piece = llama_token_to_piece(ctx, max_i);
+        std::cout << std::setprecision(2) << piece << " " << max << "|";
         rf[max_i] = -FLT_MAX;
     }
     printf("\n");
+}
+
+bool params_parse(int argc, char ** argv) {
+    bool invalid_param = false;
+    std::string arg;
+    const std::string arg_prefix = "--";
+
+    for (int i = 1; i < argc; i++) {
+        arg = argv[i];
+        if (arg.compare(0, arg_prefix.size(), arg_prefix) == 0) {
+            std::replace(arg.begin(), arg.end(), '_', '-');
+        }
+
+        if (arg == "-t" || arg == "--threads") {
+            if (++i >= argc) {
+                invalid_param = true;
+                break;
+            }
+            params.n_threads = std::stoi(argv[i]);
+            if (params.n_threads <= 0) {
+                params.n_threads = std::thread::hardware_concurrency();
+            }
+        } else if (arg == "-p" || arg == "--prompt") {
+            if (++i >= argc) {
+                invalid_param = true;
+                break;
+            }
+            params.prompt = argv[i];
+        } else if (arg == "-n" || arg == "--n-predict") {
+            if (++i >= argc) {
+                invalid_param = true;
+                break;
+            }
+            params.n_predict = std::stoi(argv[i]);
+        } else if (arg == "-m" || arg == "--model") {
+            if (++i >= argc) {
+                invalid_param = true;
+                break;
+            }
+            params.model = argv[i];
+        } else if (arg == "-d" || arg == "--draw") {
+            mia.draw = true;
+        } else if (arg == "--ll" || arg == "--logit-lens") {
+            if (++i >= argc) {
+                invalid_param = true;
+                break;
+            }
+            mia.ll_layer = std::string(argv[i]);
+
+        } else if (arg == "--save") {
+            if (++i >= argc) {
+                invalid_param = true;
+                break;
+            }
+            mia.save_layer_name = std::string(argv[i]);
+            if (++i >= argc) {
+                invalid_param = true;
+                break;
+            }
+            mia.save_layer_filename = std::string(argv[i]);
+        } else if (arg == "--load") {
+            if (++i >= argc) {
+                invalid_param = true;
+                break;
+            }
+            mia.load_layer_name = std::string(argv[i]);
+            if (++i >= argc) {
+                invalid_param = true;
+                break;
+            }
+            mia.load_layer_filename = std::string(argv[i]);
+        }
+    }
+    if (invalid_param) {
+        std::cout << "error: invalid parameter for argument: " << arg << std::endl;
+        return false;
+    }
+    return true;
 }

@@ -237,16 +237,16 @@ llama_token llama_sampling_sample(
 
             id = llama_sample_token(ctx_main, &cur_p);
 
-            //{
-            //    const int n_top = 10;
-            //    LOG("top %d candidates:\n", n_top);
+            {
+               const int n_top = 10;
+               LOG("top %d candidates:\n", n_top);
 
-            //    for (int i = 0; i < n_top; i++) {
-            //        const llama_token id = cur_p.data[i].id;
-            //        (void)id; // To avoid a warning that id is unused when logging is disabled.
-            //        LOG(" - %5d: '%12s' (%.3f)\n", id, llama_token_to_piece(ctx_main, id).c_str(), cur_p.data[i].p);
-            //    }
-            //}
+               for (int i = 0; i < n_top; i++) {
+                   const llama_token id = cur_p.data[i].id;
+                   (void)id; // To avoid a warning that id is unused when logging is disabled.
+                   LOG(" - %5d: '%12s' (%.3f)\n", id, llama_token_to_piece(ctx_main, id).c_str(), cur_p.data[i].p);
+               }
+            }
 
             LOG("sampled token: %5d: '%s'\n", id, llama_token_to_piece(ctx_main, id).c_str());
         }
