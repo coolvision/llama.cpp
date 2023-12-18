@@ -16721,6 +16721,50 @@ struct ggml_tensor * ggml_graph_get_tensor(struct ggml_cgraph * cgraph, const ch
     return NULL;
 }
 
+struct ggml_tensor * get_float_weights(struct ggml_context * ctx0, struct ggml_cgraph * cgraph, char * name) {
+
+    struct ggml_tensor *s = ggml_graph_get_tensor(cgraph, name);
+    int nx = s->ne[0];
+    int ny = s->ne[1];
+
+    struct ggml_tensor * dst = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, nx, ny);;
+
+    const int nc = s->ne[0];
+    const int nr = s->ne[1];
+    const enum ggml_type type = s->type;
+    ggml_to_float_t const dequantize_row_q = type_traits[type].to_float;
+
+    // printf("get_float_weights got tensor %s %d %d size %d %d\n", s->name, s->type, dequantize_row_q, nc, nr);
+
+    assert( dst->ne[0] == nc);
+    assert( dst->ne[1] == nr);
+    assert(s->nb[0] == ggml_type_size(type));
+
+
+    for (int i = 0; i < nr; ++i) {
+
+        if (s->type == 0) {
+            memcpy((uint8_t *)dst->data + i*dst->nb[1], (uint8_t *)s->data + i*s->nb[1],
+                nc * sizeof(float));
+        } else {
+            dequantize_row_q(
+                    (const void *) ((char *) s->data + i*s->nb[1]),
+                         (float *) ((char *) dst->data + i*dst->nb[1]), nc);
+        }
+
+        // if (i < 10) {
+        //     printf("%s got row %d\n", name, i);
+        //     for (int x = 0; x < 8; x++) {
+        //         float *vp = (float *) ((char *) dst->data + i*dst->nb[1] + x*dst->nb[0]);
+        //         printf("%.3f |", *vp);
+        //     }
+        //     printf("\n");
+        // }       
+    }
+
+    return dst;
+}
+
 static void ggml_graph_export_leaf(const struct ggml_tensor * tensor, FILE * fout) {
     const int64_t * ne = tensor->ne;
     const size_t  * nb = tensor->nb;

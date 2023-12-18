@@ -851,6 +851,7 @@ extern "C" {
 
     // MIA_DEV
     void add_ggml_callback(struct llama_context *ctx, ggml_compute_callback cb);
+    void add_ggml_init_callback(struct llama_context *ctx, ggml_compute_init_callback cb);
 
 #ifdef __cplusplus
 }

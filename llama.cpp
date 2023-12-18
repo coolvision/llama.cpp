@@ -77,6 +77,10 @@
 #include <type_traits>
 #include <unordered_map>
 
+// MIA_DEV
+char *vocab_ext;
+int vocab_ext_token_size = 16;
+
 #if defined(_MSC_VER)
 #pragma warning(disable: 4244 4267) // possible loss of data
 #endif
@@ -1521,6 +1525,7 @@ struct llama_context {
 
     // MIA_DEV
     ggml_compute_callback ggml_cb = NULL;
+    ggml_compute_init_callback ggml_init_cb = NULL;
 
 #ifdef GGML_USE_METAL
     ggml_metal_context * ctx_metal = NULL;
@@ -1534,6 +1539,10 @@ struct llama_context {
 // MIA_DEV
 void add_ggml_callback(struct llama_context *ctx, ggml_compute_callback cb) {
     ctx->ggml_cb = cb;
+}
+
+void add_ggml_init_callback(struct llama_context *ctx, ggml_compute_init_callback cb) {
+    ctx->ggml_init_cb = cb;
 }
 
 //
@@ -2736,6 +2745,9 @@ static void llm_load_vocab(
 
     vocab.id_to_token.resize(n_vocab);
 
+    // MIA_DEV
+    vocab_ext = (char *)malloc(n_vocab * vocab_ext_token_size);
+
     for (uint32_t i = 0; i < n_vocab; i++) {
         std::string word = gguf_get_arr_str(ctx, token_idx, i);
         GGML_ASSERT(codepoints_from_utf8(word).size() > 0);
@@ -2746,7 +2758,29 @@ static void llm_load_vocab(
         token_data.text  = std::move(word);
         token_data.score = scores ? scores[i] : 0.0f;
         token_data.type  = toktypes ? (llama_token_type) toktypes[i] : LLAMA_TOKEN_TYPE_NORMAL;
+
+        // MIA_DEV
+        std::string w = token_data.text;
+        replace_all(w, "\xe2\xe2\x96\x81", "~");
+        replace_all(w, "\xe2\x96\x81", " ");
+        replace_all(w, "\xe2\xc2", "~");
+        replace_all(w, "\x0d", "~");
+        std::string s = "";
+        for(char c : w) {
+            if(isprint((unsigned char)c)) {
+                s += c;
+            } else {
+                // s += '~';
+                std::stringstream stream;
+                stream << std::hex << (unsigned int)(unsigned char)(c);
+                std::string code = stream.str();
+                s += std::string("\\x")+(code.size()<2?"0":"")+code;
+            }
+        }
+        char *p = &vocab_ext[i*vocab_ext_token_size];
+        strncat(p, s.c_str(), vocab_ext_token_size);
     }
+
     GGML_ASSERT(vocab.id_to_token.size() == vocab.token_to_id.size());
 
     // determine the newline token: LLaMA "<0x0A>" == 10 == '\n', Falcon 193 == '\n'
@@ -5933,6 +5967,10 @@ static struct ggml_cgraph * llama_build_graph(
 
     // MIA_DEV
     result->cb = lctx.ggml_cb;
+
+    if (lctx.ggml_init_cb) {
+        lctx.ggml_init_cb(result);
+    }
 
     if (worst_case) {
         int n_non_view_total = 0;

@@ -564,6 +564,7 @@ extern "C" {
 
     // MIA_DEV
     typedef void (*ggml_compute_callback)(struct ggml_tensor * tensor);
+    typedef void (*ggml_compute_init_callback)(struct ggml_cgraph * cgraph);
 
     // computation graph
     struct ggml_cgraph {
@@ -1849,6 +1850,8 @@ extern "C" {
     GGML_API void ggml_graph_compute_with_ctx(struct ggml_context * ctx, struct ggml_cgraph * cgraph, int n_threads);
 
     GGML_API struct ggml_tensor * ggml_graph_get_tensor(struct ggml_cgraph * cgraph, const char * name);
+
+    GGML_API struct ggml_tensor * get_float_weights(struct ggml_context * ctx0, struct ggml_cgraph * cgraph, char * name);
 
     GGML_API void                 ggml_graph_export(const struct ggml_cgraph * cgraph, const char * fname);
     GGML_API struct ggml_cgraph * ggml_graph_import(const char * fname, struct ggml_context ** ctx_data, struct ggml_context ** ctx_eval);

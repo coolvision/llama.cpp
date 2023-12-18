@@ -34,15 +34,36 @@ int vis_rows = -1;
 int vis_cols = -1;
 bool draw = true;
 
+extern char *vocab_ext;
+extern int vocab_ext_token_size;
+
+// struct ggml_tensor * wq = NULL;
+// struct ggml_tensor * wk = NULL;
+// struct ggml_tensor * wv = NULL;
+
+struct ggml_tensor * output_norm = NULL;
+struct ggml_tensor * output = NULL;
+// struct ggml_tensor * token_embd = NULL;
+// struct ggml_tensor * attn_output = NULL;
+
+inline float v2(struct ggml_tensor *t, uint32_t y, uint32_t x) {
+    return *(float *) ((char *) t->data + y*t->nb[1] + x*t->nb[0]);
+}
+inline float v3(struct ggml_tensor *t, uint32_t z, uint32_t y, uint32_t x) {
+    return *(float *) ((char *) t->data + z*t->nb[2] + y*t->nb[1] + x*t->nb[0]);
+}
+
+int select_layer = -1;
+int select_index = -1;
+
+void unembed(struct ggml_tensor *t, int set_y);
 void draw_px(int ix, int iy, float v, float v_scale, CvMat *vis_img);
 void draw_px2(int ix, int iy, float v, float v_scale, CvMat *vis_img);
 void apply_colormap(char *name, uint8_t *src_img, uint8_t *dst_img, int rows, int cols);
 static void llama_null_log_callback(enum ggml_log_level level, const char * text, void * user_data);
+struct ggml_tensor * get_float_weights(struct ggml_context * ctx0, struct ggml_cgraph * cgraph, char * name);
 
 extern "C" void tensor_process_callback(struct ggml_tensor * tensor) {
-
-    static int select_layer = -1;
-    static int select_index = -1;
 
     struct ggml_tensor *t = tensor;
     struct ggml_tensor * src0 = t->src[0];
@@ -66,6 +87,15 @@ extern "C" void tensor_process_callback(struct ggml_tensor * tensor) {
     // if (strncmp(t->name, "kq_soft_max", 11) == 0) {
     //     std::cout << "tensor_process: " << name << ", " << layer_num << " att_size " << att_size << " n " << nx << " " << ny << " " << nz << std::endl;
     // }
+
+    std::cout << "tensor_process: " << name << ", " << layer_num << " att_size " << att_size << " n " << nx << " " << ny << " " << nz << std::endl;
+
+    if (strncmp(t->name, "result_wo", 9) == 0 && layer_num == 16) {
+        printf("\nunembed LN %d %s:\n", layer_num, t->name);
+        for (int y = ny-1; y < ny; y++) {
+            unembed(t, y);
+        }
+    }
 
     if (ggml_n_dims(t) == 3) {
         for (int z = 0; z < nz; z++) {
@@ -118,6 +148,33 @@ extern "C" void tensor_process_callback(struct ggml_tensor * tensor) {
     }
 }
 
+extern "C" void init_callback(struct ggml_cgraph * cgraph) {
+
+    uint32_t size = (
+        // 4096ull*4097ull + 
+        // 4096ull*4097ull +
+        // 4096ull*4097ull +
+        // 4096ull*4097ull +
+        // 32000ull * 4097ull + 4097ull +
+        32000ull * 4097ull + 4097ull
+        ) * sizeof(float);
+    uint8_t *buf = (uint8_t *)malloc(size);
+    struct ggml_init_params params;
+    params.mem_size   = size;
+    params.mem_buffer = buf;
+    params.no_alloc   = false;
+    struct ggml_context * ctx0 = ggml_init(params);
+
+    // wq = get_float_weights(ctx0, cgraph, "blk.16.attn_q.weight"); 
+    // wk = get_float_weights(ctx0, cgraph, "blk.16.attn_k.weight");
+    // wv = get_float_weights(ctx0, cgraph, "blk.16.attn_v.weight"); 
+
+    output_norm = get_float_weights(ctx0, cgraph, "output_norm.weight"); 
+    output = get_float_weights(ctx0, cgraph, "output.weight");
+    // token_embd = get_float_weights(ctx0, cgraph, "token_embd.weight");
+    // attn_output = get_float_weights(ctx0, cgraph, "blk.16.attn_output.weight"); 
+}
+
 int main(int argc, char ** argv) {
     gpt_params params;
 
@@ -159,6 +216,7 @@ int main(int argc, char ** argv) {
 // hook into computation graph
 
     add_ggml_callback(ctx, tensor_process_callback);
+    add_ggml_init_callback(ctx, init_callback);
 
 //=============================================================================
 
@@ -193,7 +251,6 @@ int main(int argc, char ** argv) {
 
 //=============================================================================
 // optional visualization
-    bool draw = true;
     if (draw) {
         att_size = embd_inp.size();
         vis_rows = 33 * (att_size * n_act_maps + y_pad);
@@ -363,4 +420,59 @@ static void llama_null_log_callback(enum ggml_log_level level, const char * text
     (void) level;
     (void) text;
     (void) user_data;
+}
+
+void unembed(struct ggml_tensor *t, int set_y) {
+
+    const int nx = t->ne[0];
+    float *rn = (float *)malloc(nx * sizeof(float));
+    float *rf = (float *)malloc(output->ne[1] * sizeof(float));
+    float *p = (float *)malloc(output->ne[1] * sizeof(float));
+
+    for (int x = 0; x < nx; x++) {
+        rn[x] = v2(t, set_y, x) * v2(output_norm, 0, x);
+    }
+
+    for (int y = 0; y < output->ne[1]; y++) {
+        float dot = 0;
+        for (int x = 0; x < nx; x++) {
+            dot += rn[x] * v2(output, y, x);
+        }
+        rf[y] = dot;
+    }
+
+    // softmax
+    float max = -FLT_MAX;
+    int max_i = -1;
+    for (int y = 0; y < output->ne[1]; y++) {
+        if (rf[y] > max) {
+            max = rf[y];
+            max_i = y;
+        } 
+    }
+    float sum = 0;
+    for (int y = 0; y < output->ne[1]; y++) {
+        p[y] = expf(rf[y]-max);
+        sum += p[y];
+    }
+    for (int y = 0; y < output->ne[1]; y++) {
+        p[y] /= sum;
+    }
+
+    // top-k
+    for (int j = 0; j < 5; j++) {
+
+        float max = -FLT_MAX;
+        int max_i = -1;
+        for (int y = 0; y < output->ne[1]; y++) {
+            if (rf[y] > max) {
+                max = rf[y];
+                max_i = y;
+            } 
+        }
+        printf("%s %.2f – ", &vocab_ext[max_i*vocab_ext_token_size], max);
+
+        rf[max_i] = -FLT_MAX;
+    }
+    printf("\n");
 }

@@ -50,6 +50,7 @@ models-mnt
 /lookahead
 /main
 /metal
+/mia
 /perplexity
 /q8dot
 /quantize
