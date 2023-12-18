@@ -32,19 +32,29 @@ int y_pad = 1;
 int n_act_maps = 1;
 int vis_rows = -1;
 int vis_cols = -1;
-bool draw = true;
 
 extern char *vocab_ext;
 extern int vocab_ext_token_size;
 
-// struct ggml_tensor * wq = NULL;
-// struct ggml_tensor * wk = NULL;
-// struct ggml_tensor * wv = NULL;
-
 struct ggml_tensor * output_norm = NULL;
 struct ggml_tensor * output = NULL;
-// struct ggml_tensor * token_embd = NULL;
-// struct ggml_tensor * attn_output = NULL;
+
+//=============================================================================
+
+bool draw = true;
+
+std::string save_layer_name;
+std::string save_layer_filename;    
+int save_layer_i = -1;
+
+std::string load_layer_name;
+std::string load_layer_filename;    
+int load_layer_i = -1;
+
+int select_layer = -1;
+int select_index = -1;
+
+//=============================================================================
 
 inline float v2(struct ggml_tensor *t, uint32_t y, uint32_t x) {
     return *(float *) ((char *) t->data + y*t->nb[1] + x*t->nb[0]);
@@ -52,9 +62,6 @@ inline float v2(struct ggml_tensor *t, uint32_t y, uint32_t x) {
 inline float v3(struct ggml_tensor *t, uint32_t z, uint32_t y, uint32_t x) {
     return *(float *) ((char *) t->data + z*t->nb[2] + y*t->nb[1] + x*t->nb[0]);
 }
-
-int select_layer = -1;
-int select_index = -1;
 
 void unembed(struct ggml_tensor *t, int set_y);
 void draw_px(int ix, int iy, float v, float v_scale, CvMat *vis_img);
@@ -96,6 +103,22 @@ extern "C" void tensor_process_callback(struct ggml_tensor * tensor) {
         for (int y = 0; y < ny; y++) {
             unembed(t, y);
         }
+    }
+
+    if (strstr(t->name, save_layer_name.c_str()) && layer_num == save_layer_i) {
+        FILE *fout = fopen(save_layer_filename.c_str(), "wb");
+        const size_t size = ggml_nbytes(t);
+        int r = fwrite(t->data, sizeof(char), size, fout);
+        printf("\nsave tensor %s to %s size %d\n", save_layer_name.c_str(), save_layer_filename.c_str(), size);
+        fclose(fout);
+    }
+
+    if (strstr(t->name, load_layer_name.c_str()) && layer_num == load_layer_i) {
+        FILE *fin = fopen(load_layer_filename.c_str(), "rb");
+        const size_t size = ggml_nbytes(t);
+        const size_t r = fread((char *)t->data, sizeof(char), size, fin);
+        printf("\nload tensor %s from %s size %d\n", load_layer_name.c_str(), load_layer_filename.c_str(), size);
+        fclose(fin);
     }
 
     if (ggml_n_dims(t) == 3) {
