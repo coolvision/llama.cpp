@@ -46,8 +46,12 @@ struct mia_params {
     std::string ll_layer;
     std::string save_layer_name;
     std::string save_layer_filename;    
-    std::string load_layer_name;
-    std::string load_layer_filename;    
+
+    std::string patch_layer_name;
+    std::string patch_layer_filename;
+    int patch_from;
+    int patch_to;
+
     int select_layer = -1;
     int select_index = -1;
 };
@@ -81,6 +85,12 @@ extern "C" void tensor_process_callback(struct ggml_tensor * tensor) {
     int ny = t->ne[1];
     int nz = t->ne[2];
 
+    // do not bother with processing recurrent generation
+    if (ny < 2) {
+        return;
+    }
+
+    // extract layer insex from layer name
     std::stringstream st(t->name);
     std::string name(t->name);
     int layer_num = 0;
@@ -92,14 +102,7 @@ extern "C" void tensor_process_callback(struct ggml_tensor * tensor) {
         layer_num = std::stoi(ln);
     }
 
-    if ((strstr(t->name, mia.ll_layer.c_str()) && !mia.ll_layer.empty()) || (mia.ll_layer == "all")) { 
-        printf("\nunembed LN %d %s:\n", layer_num, t->name);
-        for (int y = 0; y < ny; y++) {
-            unembed(t, y);
-        }
-        printf("\n");
-    }
-
+    // save a tensor to disk
     if (!mia.save_layer_name.empty() && strstr(t->name, mia.save_layer_name.c_str())) {
         FILE *fout = fopen(mia.save_layer_filename.c_str(), "wb");
         const size_t size = ggml_nbytes(t);
@@ -108,14 +111,47 @@ extern "C" void tensor_process_callback(struct ggml_tensor * tensor) {
         fclose(fout);
     }
 
-    if (!mia.load_layer_name.empty() && strstr(t->name, mia.load_layer_name.c_str())) {
-        FILE *fin = fopen(mia.load_layer_filename.c_str(), "rb");
-        const size_t size = ggml_nbytes(t);
-        const size_t r = fread((char *)t->data, sizeof(char), size, fin);
-        printf("\nload tensor %s from %s size %d\n", mia.load_layer_name.c_str(), mia.load_layer_filename.c_str(), size);
+    // patch a tensor with values read from disk
+    if (!mia.patch_layer_name.empty() && strstr(t->name, mia.patch_layer_name.c_str())) {
+        FILE *fin = fopen(mia.patch_layer_filename.c_str(), "rb");
+        size_t curr_size = ggml_nbytes(t);
+
+        fseek(fin, 0, SEEK_END);
+        size_t read_size = ftell(fin);
+        fseek(fin, 0, SEEK_SET);
+
+        char *buf = (char *)malloc(read_size);
+        const size_t r = fread(buf, sizeof(char), read_size, fin);
+        printf("\nload tensor %s from %s size %d curr_size %d patched dims: %d %d\n", mia.patch_layer_name.c_str(), mia.patch_layer_filename.c_str(), read_size, curr_size, t->nb[0], t->nb[1]);
         fclose(fin);
+
+        size_t patch_size = t->nb[1];
+
+        std::cout << "patch " << mia.patch_layer_name << " " << patch_size << "b, from " << mia.patch_from << " to " << mia.patch_to << std::endl;
+        std::cout << "in read buffer, access " << mia.patch_from*t->nb[1]+patch_size << " in curr buffer " << mia.patch_to*t->nb[1]+patch_size << std::endl;
+
+        if (mia.patch_from*t->nb[1]+patch_size <= read_size &&
+            mia.patch_to*t->nb[1]+patch_size <= curr_size) {
+            char *src = (buf + mia.patch_from*t->nb[1]);
+            char *dst = ((char *)t->data + mia.patch_to*t->nb[1]);
+            memcpy(dst, src, patch_size);
+        } else {
+            std::cout << "can't patch" << std::endl;
+            std::cout << "from " << mia.patch_from*t->nb[1]+patch_size << " " << read_size << std::endl;
+            std::cout << "to " << mia.patch_to*t->nb[1]+patch_size  << " " << curr_size << std::endl;
+        }
     }
 
+    // logit lens
+    if ((strstr(t->name, mia.ll_layer.c_str()) && !mia.ll_layer.empty()) || (mia.ll_layer == "all")) { 
+        printf("\nunembed LN %d %s:\n", layer_num, t->name);
+        for (int y = 0; y < ny; y++) {
+            unembed(t, y);
+        }
+        printf("\n");
+    }
+
+    // draw attention
     if (ggml_n_dims(t) == 3) {
         for (int z = 0; z < nz; z++) {
 
@@ -126,8 +162,8 @@ extern "C" void tensor_process_callback(struct ggml_tensor * tensor) {
                 CvFont font;
                 cvInitFont(&font, CV_FONT_HERSHEY_SIMPLEX, 0.5, 0.5, 0, 1, 8);
                 cvPutText(vis_img, buffer, cvPoint(
-                        t->ne[0] * 32 + 20,
-                        layer_num * (att_size * 1 + y_pad) + 10),
+                        t->ne[0] * 32 + 10,
+                        layer_num * (att_size * 1 + y_pad) + 20),
                         &font, cvScalarAll(128));
 
                 int head_i = (layer_num * 32 + z);
@@ -159,6 +195,15 @@ extern "C" void tensor_process_callback(struct ggml_tensor * tensor) {
 
 extern "C" void init_callback(struct ggml_cgraph * cgraph) {
 
+    // run once
+    static int init = false;
+    if (!init) {
+        init = true;
+    } else {
+        return;
+    }
+
+    // utlity ggml context
     uint32_t size = (
         32000ull * 4097ull + 4097ull
         ) * sizeof(float);
@@ -169,8 +214,11 @@ extern "C" void init_callback(struct ggml_cgraph * cgraph) {
     params.no_alloc   = false;
     struct ggml_context * ctx0 = ggml_init(params);
 
+    // de-quantize weights for unembedding 
     output_norm = get_float_weights(ctx0, cgraph, "output_norm.weight"); 
     output = get_float_weights(ctx0, cgraph, "output.weight");
+
+    // std::cout << "init_callback: get_float_weights" << std::endl;
 }
 
 int main(int argc, char ** argv) {
@@ -179,7 +227,7 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    params.sparams.temp = -1.0;
+    params.sparams.temp = -1.0; // to make sampling deterministic
     llama_sampling_params & sparams = params.sparams;
 
     log_set_target(stdout);
@@ -223,7 +271,15 @@ int main(int argc, char ** argv) {
         LOG("embd_inp was considered empty and bos was added: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx, embd_inp).c_str());
     }
 
-    LOG_TEE("prompt (%d): '%s'\n", embd_inp.size(), params.prompt.c_str());
+    // LOG_TEE("prompt (%d): '%s'\n", embd_inp.size(), params.prompt.c_str());
+
+    LOG_TEE("\n");
+    LOG_TEE("%s: prompt: '%s'\n", __func__, params.prompt.c_str());
+    LOG_TEE("%s: number of tokens in prompt = %zu\n", __func__, embd_inp.size());
+    for (int i = 0; i < (int) embd_inp.size(); i++) {
+        LOG_TEE("%6d -> '%s'\n", embd_inp[i], llama_token_to_piece(ctx, embd_inp[i]).c_str());
+    }
+
 
 //=============================================================================
 // optional visualization
@@ -262,8 +318,6 @@ int main(int argc, char ** argv) {
                     n_eval = params.n_batch;
                 }
 
-                // LOG("eval: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx, embd).c_str());
-
                 if (llama_decode(ctx, llama_batch_get_one(&embd[i], n_eval, n_past, 0))) {
                     LOG_TEE("%s : failed to eval\n", __func__);
                     return 1;
@@ -277,8 +331,6 @@ int main(int argc, char ** argv) {
                 }
 
                 n_past += n_eval;
-
-                // LOG("n_past = %d\n", n_past);
             }
         }
 
@@ -290,14 +342,10 @@ int main(int argc, char ** argv) {
 
             llama_sampling_accept(ctx_sampling, ctx, id, true);
 
-            // LOG("last: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx, ctx_sampling->prev).c_str());
-
             embd.push_back(id);
 
             // decrement remaining sampling budget
             --n_remain;
-
-            // LOG("n_remain: %d\n", n_remain);
         } else {
             // some user input remains from prompt or interaction, forward it to processing
             // LOG("embd_inp.size(): %d, n_consumed: %d\n", (int) embd_inp.size(), n_consumed);
@@ -318,8 +366,6 @@ int main(int argc, char ** argv) {
         // display text
         for (auto id : embd) {
             const std::string token_str = llama_token_to_piece(ctx, id);
-            // printf("%s", token_str.c_str());
-
             if (embd.size() > 1) {
                 input_tokens.push_back(id);
             } else {
@@ -337,7 +383,6 @@ int main(int argc, char ** argv) {
     }
 
     std::cout << "output: \"" << output_ss.str() << "\"" << std::endl;
-
 
     if (ctx_guidance) { llama_free(ctx_guidance); }
     llama_free(ctx);
@@ -424,7 +469,7 @@ void unembed(struct ggml_tensor *t, int set_y) {
 
     // top-k
     printf("%d: ", set_y);
-    for (int j = 0; j < 10; j++) {
+    for (int j = 0; j < 20; j++) {
 
         float max = -FLT_MAX;
         int max_i = -1;
@@ -499,17 +544,27 @@ bool params_parse(int argc, char ** argv) {
                 break;
             }
             mia.save_layer_filename = std::string(argv[i]);
-        } else if (arg == "--load") {
+        } else if (arg == "--patch") {
             if (++i >= argc) {
                 invalid_param = true;
                 break;
             }
-            mia.load_layer_name = std::string(argv[i]);
+            mia.patch_layer_name = std::string(argv[i]);
             if (++i >= argc) {
                 invalid_param = true;
                 break;
             }
-            mia.load_layer_filename = std::string(argv[i]);
+            mia.patch_layer_filename = std::string(argv[i]);
+            if (++i >= argc) {
+                invalid_param = true;
+                break;
+            }
+            mia.patch_from = std::stoi(argv[i]);  
+            if (++i >= argc) {
+                invalid_param = true;
+                break;
+            }
+            mia.patch_to = std::stoi(argv[i]);                       
         }
     }
     if (invalid_param) {
