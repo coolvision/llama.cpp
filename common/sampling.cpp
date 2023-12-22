@@ -218,9 +218,15 @@ llama_token llama_sampling_sample(
         // greedy sampling, with probs
         llama_sample_softmax(ctx_main, &cur_p);
         id = cur_p.data[0].id;
+
+         LOG("llama_sample_softmax: %5d: '%s'\n", id, llama_token_to_piece(ctx_main, id).c_str());
+
     } else if (temp == 0.0) {
         // greedy sampling, no probs
         id = llama_sample_token_greedy(ctx_main, &cur_p);
+
+        LOG("llama_sample_token_greedy: %5d: '%s'\n", id, llama_token_to_piece(ctx_main, id).c_str());
+
     } else {
         if (mirostat == 1) {
             const int mirostat_m = 100;

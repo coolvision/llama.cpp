@@ -43,17 +43,25 @@ struct ggml_tensor * output = NULL;
 //=============================================================================
 struct mia_params {
     bool draw = false;
+    std::string draw_path;
     std::string ll_layer;
+    int ll_top_k = 10;
     std::string save_layer_name;
     std::string save_layer_filename;    
 
     std::string patch_layer_name;
-    std::string patch_layer_filename;
+    std::string patch_layer_filename1;
+    std::string patch_layer_filename2;
+
     int patch_from;
     int patch_to;
 
     int select_layer = -1;
     int select_index = -1;
+
+    std::vector<int> ablate_array;
+
+    bool print_cgraph = false;
 };
 
 mia_params mia;
@@ -85,12 +93,12 @@ extern "C" void tensor_process_callback(struct ggml_tensor * tensor) {
     int ny = t->ne[1];
     int nz = t->ne[2];
 
-    // do not bother with processing recurrent generation
+    // do not bother with processing for recurrent generation
     if (ny < 2) {
         return;
     }
 
-    // extract layer insex from layer name
+    // extract layer index from layer name
     std::stringstream st(t->name);
     std::string name(t->name);
     int layer_num = 0;
@@ -113,16 +121,15 @@ extern "C" void tensor_process_callback(struct ggml_tensor * tensor) {
 
     // patch a tensor with values read from disk
     if (!mia.patch_layer_name.empty() && strstr(t->name, mia.patch_layer_name.c_str())) {
-        FILE *fin = fopen(mia.patch_layer_filename.c_str(), "rb");
+        
+        FILE *fin = fopen(mia.patch_layer_filename1.c_str(), "rb");
         size_t curr_size = ggml_nbytes(t);
-
         fseek(fin, 0, SEEK_END);
         size_t read_size = ftell(fin);
         fseek(fin, 0, SEEK_SET);
-
         char *buf = (char *)malloc(read_size);
         const size_t r = fread(buf, sizeof(char), read_size, fin);
-        printf("\nload tensor %s from %s size %d curr_size %d patched dims: %d %d\n", mia.patch_layer_name.c_str(), mia.patch_layer_filename.c_str(), read_size, curr_size, t->nb[0], t->nb[1]);
+        printf("\nload tensor %s from %s size %d curr_size %d patched dims: %d %d\n", mia.patch_layer_name.c_str(), mia.patch_layer_filename1.c_str(), read_size, curr_size, t->nb[0], t->nb[1]);
         fclose(fin);
 
         size_t patch_size = t->nb[1];
@@ -136,10 +143,28 @@ extern "C" void tensor_process_callback(struct ggml_tensor * tensor) {
             char *dst = ((char *)t->data + mia.patch_to*t->nb[1]);
             memcpy(dst, src, patch_size);
         } else {
-            std::cout << "can't patch" << std::endl;
-            std::cout << "from " << mia.patch_from*t->nb[1]+patch_size << " " << read_size << std::endl;
-            std::cout << "to " << mia.patch_to*t->nb[1]+patch_size  << " " << curr_size << std::endl;
+            std::cout << "can't patch" << " from " << mia.patch_from*t->nb[1]+patch_size << " " << read_size <<
+                "to " << mia.patch_to*t->nb[1]+patch_size  << " " << curr_size << std::endl;
         }
+
+        // patching with avterage of 2 tensors
+        if (!mia.patch_layer_filename2.empty()) {
+            FILE *fin = fopen(mia.patch_layer_filename2.c_str(), "rb");
+            char *buf2 = (char *)malloc(read_size);
+            const size_t r = fread(buf2, sizeof(char), read_size, fin);
+            printf("\nload tensor2 %s from %s size %d curr_size %d patched dims: %d %d\n", mia.patch_layer_name.c_str(), mia.patch_layer_filename2.c_str(), read_size, curr_size, t->nb[0], t->nb[1]);
+            fclose(fin);
+
+            for (int x = 0; x < nx; x++) {
+                float *s1 = (float *) ((char *) buf + mia.patch_from*t->nb[1] + x*t->nb[0]);
+                float *s2 = (float *) ((char *) buf2 + mia.patch_from*t->nb[1] + x*t->nb[0]);
+                float *p = (float *) ((char *) t->data + mia.patch_to*t->nb[1] + x*t->nb[0]);
+                *p = (*s1 + *s2) / 2.0f;
+            }
+            free(buf2);
+        }
+
+        free(buf);
     }
 
     // logit lens
@@ -160,10 +185,10 @@ extern "C" void tensor_process_callback(struct ggml_tensor * tensor) {
                 char buffer[25];
                 sprintf(buffer, "%d", layer_num);
                 CvFont font;
-                cvInitFont(&font, CV_FONT_HERSHEY_SIMPLEX, 0.5, 0.5, 0, 1, 8);
+                cvInitFont(&font, CV_FONT_HERSHEY_SIMPLEX, 0.3, 0.3, 0, 1, 8);
                 cvPutText(vis_img, buffer, cvPoint(
-                        t->ne[0] * 32 + 10,
-                        layer_num * (att_size * 1 + y_pad) + 20),
+                        t->ne[0] * att_size + 10,
+                        layer_num * (att_size * 1 + y_pad) + att_size/2),
                         &font, cvScalarAll(128));
 
                 int head_i = (layer_num * 32 + z);
@@ -175,8 +200,15 @@ extern "C" void tensor_process_callback(struct ggml_tensor * tensor) {
                     }
                 }
 
+                for (int i = 0; i < mia.ablate_array.size(); i++) {
+                    if (mia.ablate_array[i] == head_i) {
+                        do_ablate = true;
+                    }
+                }
+
+
                 for (int y = 0; y < ny; y++) {
-                    for (int x = 0; x < nx; x++) {
+                    for (int x = 0; x < ny; x++) {
                         float *vp = (float *) ((char *) t->data + z*t->nb[2] + y*t->nb[1] + x*t->nb[0]);
                         float v = *vp;
                         if (do_ablate) {
@@ -184,7 +216,7 @@ extern "C" void tensor_process_callback(struct ggml_tensor * tensor) {
                             v = 0;
                         }
                         int iy = y + layer_num * (att_size * 1 + y_pad);
-                        int ix = x + nx*z;
+                        int ix = x + ny*z;
                         draw_px2(ix, iy, v, 255.0f, vis_img);
                     }
                 }
@@ -218,7 +250,9 @@ extern "C" void init_callback(struct ggml_cgraph * cgraph) {
     output_norm = get_float_weights(ctx0, cgraph, "output_norm.weight"); 
     output = get_float_weights(ctx0, cgraph, "output.weight");
 
-    // std::cout << "init_callback: get_float_weights" << std::endl;
+    if (mia.print_cgraph) {
+        ggml_graph_export(cgraph, 0);
+    }
 }
 
 int main(int argc, char ** argv) {
@@ -250,7 +284,7 @@ int main(int argc, char ** argv) {
     }
 
 //=============================================================================
-// hook into computation graph
+// hook into the computation graph
 
     add_ggml_callback(ctx, tensor_process_callback);
     add_ggml_init_callback(ctx, init_callback);
@@ -286,12 +320,14 @@ int main(int argc, char ** argv) {
     if (mia.draw) {
         att_size = embd_inp.size();
         vis_rows = 33 * (att_size * n_act_maps + y_pad);
-        vis_cols = 32 * 32 + 200;
+        vis_cols = 32 * att_size + 200;
         vis_img = cvCreateMat(vis_rows, vis_cols, CV_8UC1);
         cvSetZero(vis_img);
     }
+
 //=============================================================================
-   
+// generation
+
     int n_past             = 0;
     int n_remain           = params.n_predict;
     int n_consumed         = 0;
@@ -324,10 +360,8 @@ int main(int argc, char ** argv) {
                 }
 
                 if (mia.draw && n_past == 0) {
-                    char fname[128];
-                    sprintf(fname, "/home/ubuntu/tmp/llama_vis.png");
                     CvMat *map_img = cvCreateMat(vis_rows, vis_cols, CV_8UC3);
-                    apply_colormap(fname, vis_img->data.ptr, map_img->data.ptr, vis_rows, vis_cols);
+                    apply_colormap((char *)mia.draw_path.c_str(), vis_img->data.ptr, map_img->data.ptr, vis_rows, vis_cols);
                 }
 
                 n_past += n_eval;
@@ -469,7 +503,7 @@ void unembed(struct ggml_tensor *t, int set_y) {
 
     // top-k
     printf("%d: ", set_y);
-    for (int j = 0; j < 20; j++) {
+    for (int j = 0; j < mia.ll_top_k; j++) {
 
         float max = -FLT_MAX;
         int max_i = -1;
@@ -486,6 +520,8 @@ void unembed(struct ggml_tensor *t, int set_y) {
     printf("\n");
 }
 
+#define INC_ARG if (++i >= argc) {invalid_param = true; break;}
+
 bool params_parse(int argc, char ** argv) {
     bool invalid_param = false;
     std::string arg;
@@ -496,75 +532,69 @@ bool params_parse(int argc, char ** argv) {
         if (arg.compare(0, arg_prefix.size(), arg_prefix) == 0) {
             std::replace(arg.begin(), arg.end(), '_', '-');
         }
-
         if (arg == "-t" || arg == "--threads") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
+            INC_ARG
             params.n_threads = std::stoi(argv[i]);
             if (params.n_threads <= 0) {
                 params.n_threads = std::thread::hardware_concurrency();
             }
+        } else if (arg == "--print-cgraph") {
+            mia.print_cgraph = true;            
         } else if (arg == "-p" || arg == "--prompt") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
+            INC_ARG
             params.prompt = argv[i];
         } else if (arg == "-n" || arg == "--n-predict") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
+            INC_ARG
             params.n_predict = std::stoi(argv[i]);
         } else if (arg == "-m" || arg == "--model") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
+            INC_ARG
             params.model = argv[i];
         } else if (arg == "-d" || arg == "--draw") {
             mia.draw = true;
+            INC_ARG
+            mia.draw_path = std::string(argv[i]);
         } else if (arg == "--ll" || arg == "--logit-lens") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
+            INC_ARG
             mia.ll_layer = std::string(argv[i]);
-
+            INC_ARG
+            mia.ll_top_k = std::stoi(argv[i]);         
         } else if (arg == "--save") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
+            INC_ARG
             mia.save_layer_name = std::string(argv[i]);
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
+            INC_ARG
             mia.save_layer_filename = std::string(argv[i]);
         } else if (arg == "--patch") {
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
+            INC_ARG
             mia.patch_layer_name = std::string(argv[i]);
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
-            mia.patch_layer_filename = std::string(argv[i]);
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
-            }
+            INC_ARG
+            mia.patch_layer_filename1 = std::string(argv[i]);
+            INC_ARG
             mia.patch_from = std::stoi(argv[i]);  
-            if (++i >= argc) {
-                invalid_param = true;
-                break;
+            INC_ARG
+            mia.patch_to = std::stoi(argv[i]);
+        } else if (arg == "--patch-avg") {
+            INC_ARG
+            mia.patch_layer_name = std::string(argv[i]);
+            INC_ARG
+            mia.patch_layer_filename1 = std::string(argv[i]);
+            INC_ARG
+            mia.patch_layer_filename2 = std::string(argv[i]);            
+            INC_ARG
+            mia.patch_from = std::stoi(argv[i]);  
+            INC_ARG
+            mia.patch_to = std::stoi(argv[i]);  
+        } else if (arg == "-s" || arg == "--select") {
+            INC_ARG
+            mia.select_layer = std::stoi(argv[i]);
+            INC_ARG
+            mia.select_index = std::stoi(argv[i]);                
+        } else if (arg == "-a" || arg == "--ablate") {
+            INC_ARG
+            std::stringstream st(std::string(argv[i])); 
+            std::string a;
+            while (getline(st, a, ',')) {
+                mia.ablate_array.push_back(std::stoul(a));
             }
-            mia.patch_to = std::stoi(argv[i]);                       
         }
     }
     if (invalid_param) {
